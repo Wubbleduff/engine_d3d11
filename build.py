@@ -209,7 +209,7 @@ for compiler in build:
             cmd_list.append(src_file)
             
             cmd_str = " ".join(cmd_list)
-            print(f"Compiling '{src_file}'...")
+            print(f"Compiling '{src_file}'...", flush=True)
             proc = subprocess.run(cmd_str, capture_output=True)
             if proc.returncode != 0:
                 print(proc.stdout.decode("utf-8"))
