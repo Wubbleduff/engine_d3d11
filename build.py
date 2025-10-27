@@ -186,8 +186,7 @@ for compiler in build:
         # Copy the src directory to the intermediate build directory and gather all ".c"
         # files under it.
         src_files = []
-        shutil.copytree(src_dir, os.path.join(working_dir, src_dir))
-        for root, dirs, files in os.walk(working_dir):
+        for root, dirs, files in os.walk(src_dir):
             for src_file in files:
                 if os.path.splitext(src_file)[1] == ".c":
                     src_files.append(os.path.join(root, src_file))
@@ -196,8 +195,11 @@ for compiler in build:
         compile_success = True
         obj_files = []
         for src_file in src_files:
-            obj_file = f"{os.path.splitext(src_file)[0]}.obj"
-            pdb_file = f"{os.path.splitext(src_file)[0]}.pdb"
+            obj_file = f"{os.path.join(working_dir, os.path.splitext(src_file)[0])}.obj"
+            pdb_file = f"{os.path.join(working_dir, os.path.splitext(src_file)[0])}.pdb"
+
+            os.makedirs(os.path.dirname(obj_file), exist_ok=True)
+            os.makedirs(os.path.dirname(pdb_file), exist_ok=True)
 
             cmd_list = []
             cmd_list.append(compiler["cc_cmd"])
