@@ -1,73 +1,489 @@
-//    
-//    
-//    ////////////////////////////////////////////////////////////////////////////////
-//    //
-//    // cl build.c && build.exe
-//    //
-//    ////////////////////////////////////////////////////////////////////////////////
-//    
-//    const char* program_name;
-//    
+
+
+////////////////////////////////////////////////////////////////////////////////
+//
+// cl build.c && build.exe
+//
+////////////////////////////////////////////////////////////////////////////////
+
+const char* program_name = "engine_d3d11";
 
 struct Build
 {
     const char* name;
+
     const char* cc_cmd;
+
     int num_cc_flags;
     const char* cc_flags[256];
 
     const char* link_cmd;
+
     int num_link_flags;
     const char* link_flags[256];
+
+    int num_libs;
+    const char* libs[256];
 };
 
-#define ARRAY_INIT(TYPE, NAME, ...) \
-.num_##NAME = (sizeof( (TYPE[]) { __VA_ARGS__ } ) / sizeof(TYPE)), \
-.NAME = { \
-    __VA_ARGS__ \
-}
 
+#define COMMON_COMPILE_FLAGS "/c", "/W4", "/WX", "/EHsc", "/std:c17", "/GS-", "/Gs9999999", "/nologo", "/Isrc", "/I../common"
+#define DEBUG_COMPILE_FLAGS "/Od", "/Zi", "/DDEBUG"
+#define RELEASE_COMPILE_FLAGS "/O2"
+#define COMMON_LINKER_FLAGS "/NODEFAULTLIB", "/STACK:0x100000,0x100000", "/SUBSYSTEM:WINDOWS", "/MACHINE:X64"
+#define LIBS "kernel32.lib", "user32.lib", "gdi32.lib", "d3d11.lib", "dxgi.lib", "dxguid.lib"
+
+#define ARRAY_INIT(TYPE, NAME, ...) .num_##NAME = (sizeof( (TYPE[]) { __VA_ARGS__ } ) / sizeof(TYPE)), .NAME = { __VA_ARGS__ }
 struct Build build[] =
 {
     {
-        .name = "clang",
+        .name = "clang_debug",
 
         .cc_cmd = "clang-cl",
         ARRAY_INIT(
             const char*,
             cc_flags,
-            "/c",
-            "/W4",
-            "/WX",
-            "/EHsc",
-            "/std:c17",
-            // Avoid C runtime library
-            // https://hero.handmade.network/forums/code-discussion/t/94-guide_-_how_to_avoid_c_c++_runtime_on_windows
-            "/GS-",
-            "/Gs9999999",
-            "/nologo",
+            COMMON_COMPILE_FLAGS,
+            DEBUG_COMPILE_FLAGS,
+            "-march=skylake",
         ),
 
         .link_cmd = "lld-link",
         ARRAY_INIT(
             const char*,
             link_flags,
-            "/NODEFAULTLIB",
-            "/STACK:0x100000,0x100000",
-            "/SUBSYSTEM:WINDOWS",
-            "/MACHINE:X64",
+            COMMON_LINKER_FLAGS,
+            "/DEBUG:FULL",
+        ),
+
+        ARRAY_INIT(
+            const char*,
+            libs,
+            LIBS,
         ),
     },
+
+    {
+        .name = "clang_release",
+
+        .cc_cmd = "clang-cl",
+        ARRAY_INIT(
+            const char*,
+            cc_flags,
+            COMMON_COMPILE_FLAGS,
+            RELEASE_COMPILE_FLAGS,
+            "-march=skylake",
+        ),
+
+        .link_cmd = "lld-link",
+        ARRAY_INIT(
+            const char*,
+            link_flags,
+            COMMON_LINKER_FLAGS,
+        ),
+        
+        ARRAY_INIT(
+            const char*,
+            libs,
+            LIBS
+        ),
+    },
+
+    {
+        .name = "msvc_debug",
+
+        .cc_cmd = "cl",
+        ARRAY_INIT(
+            const char*,
+            cc_flags,
+            COMMON_COMPILE_FLAGS,
+            DEBUG_COMPILE_FLAGS,
+        ),
+
+        .link_cmd = "link",
+        ARRAY_INIT(
+            const char*,
+            link_flags,
+            COMMON_LINKER_FLAGS,
+            "/DEBUG:FULL",
+        ),
+        
+        ARRAY_INIT(
+            const char*,
+            libs,
+            LIBS
+        ),
+    },
+
+    {
+        .name = "msvc_release",
+
+        .cc_cmd = "cl",
+        ARRAY_INIT(
+            const char*,
+            cc_flags,
+            COMMON_COMPILE_FLAGS,
+            RELEASE_COMPILE_FLAGS,
+        ),
+
+        .link_cmd = "link",
+        ARRAY_INIT(
+            const char*,
+            link_flags,
+            COMMON_LINKER_FLAGS,
+        ),
+        
+        ARRAY_INIT(
+            const char*,
+            libs,
+            LIBS
+        ),
+    },
+    
 };
 
 
+
+
+////////////////////////////////////////////////////////////////////////////////
+// Impl
+
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int8_t s8;
+typedef int16_t s16;
+typedef int32_t s32;
+typedef int64_t s64;
+
+#ifdef _MSC_VER
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#define STRINGIFY(x) STRINGIFY2(x)
+#define STRINGIFY2(x) #x
+#define LINE_STRING STRINGIFY(__LINE__)
+void assert_fn(const int c, const char* msg, ...)
+{
+    if(!c)
+    {
+        va_list args;
+        va_start(args, msg);
+        vfprintf(stderr, msg, args);
+        va_end(args);
+        ExitProcess(1);
+    }
+}
+#define ASSERT(c, msg, ...) assert_fn((int)(c), (__FILE__ ":" LINE_STRING "  BUILD PROGRAM FAIL: " msg), ##__VA_ARGS__)
+
+#define ARRAY_COUNT(A) (sizeof(A) / sizeof((A)[0]))
+
+void run_cmd(const char* cmd)
+{
+    STARTUPINFOA startup_info = { .cb = sizeof(STARTUPINFOA) };
+    PROCESS_INFORMATION proc_info = {};
+    const BOOL ret = CreateProcessA(NULL, (char*)cmd, NULL, NULL, FALSE, 0, NULL, NULL, &startup_info, &proc_info);
+    ASSERT(ret, "run_cmd proc failure");
+    WaitForSingleObject(proc_info.hProcess, INFINITE);
+    CloseHandle(proc_info.hProcess);
+    CloseHandle(proc_info.hThread);
+}
+
+typedef struct String256Tag
+{
+    u8 len;
+    char s[255];
+} String256;
+
+String256 make_str(const char* s)
+{
+    String256 result;
+    const u64 len = strlen(s);
+    ASSERT(len < 255, "make_str overflow.");
+    result.len = len;
+    memcpy(result.s, s, len + 1);
+    return result;
+}
+
+String256 str_concat_str(const String256 s0, const String256 s1)
+{
+    String256 result;
+    const u64 len = s0.len + s1.len;
+    ASSERT(len < 255, "str_concat_str overflow.");
+    result.len = len;
+    memcpy(result.s, s0.s, s0.len);
+    memcpy(result.s + s0.len, s1.s, s1.len);
+    result.s[len] = 0;
+    return result;
+}
+
+String256 str_concat_cstr(const String256 s0, const char* s1)
+{
+    String256 result;
+    const u64 s1_len = strlen(s1);
+    const u64 len = s0.len + s1_len;
+    ASSERT(len < 255, "str_concat_cstr overflow.");
+    result.len = len;
+    memcpy(result.s, s0.s, s0.len);
+    memcpy(result.s + s0.len, s1, s1_len);
+    result.s[len] = 0;
+    return result;
+}
+
+u64 str_rfind_char(const String256 s, const char c)
+{
+    u64 result = (u64)-1;
+    if(!s.len)
+    {
+        return result;
+    }
+    for(u64 i = 0; i < s.len; i++)
+    {
+        result = s.s[i] == c ? i : result;
+    }
+    return result;
+}
+
+u8 str_begins_with_cstr(const String256 s0, const char* s1)
+{
+    const u64 s1_len = strlen(s1);
+    return strncmp(s0.s, s1, s1_len) == 0;
+}
+
+u8 str_ends_with_cstr(const String256 s0, const char* s1)
+{
+    const u64 s1_len = strlen(s1);
+    if(s1_len > s0.len)
+    {
+        return 0;
+    }
+    return strncmp(s0.s + s0.len - s1_len, s1, s1_len) == 0;
+}
+
+String256 str_slice_left(const String256 s, const u64 pos)
+{
+    ASSERT(pos <= s.len, "str_slice_left overflow %llu", pos);
+    String256 result = s;
+    result.len = pos;
+    result.s[pos] = 0;
+    return result;
+}
+
+String256 str_slice_right(const String256 s, const u64 pos)
+{
+    ASSERT(pos < s.len, "str_slice_right overflow %llu", pos);
+    String256 result;
+    const u8 len = (u8)(s.len - pos);
+    memcpy(result.s, s.s + pos, len);
+    result.len = len;
+    result.s[len] = 0;
+    return result;
+}
+
+#define MAKE_STRING256(S) { .len = ARRAY_COUNT(S) - 1, .s = S, }
+
+void find_src_recurse(
+    u64* r_num_src,
+    String256* r_src,
+    const u64 max_r_num_src,
+    const String256* dir)
+{
+    const String256 pattern = str_concat_cstr(*dir, "\\*");
+
+    WIN32_FIND_DATAA find_data = {};
+    const HANDLE hfind = FindFirstFileA(pattern.s, &find_data);
+    ASSERT(hfind != INVALID_HANDLE_VALUE, "FindFirstFileA failure %i", GetLastError());
+
+    do
+    {
+        String256 file_path = str_concat_cstr(*dir, "\\");
+        file_path = str_concat_cstr(file_path, find_data.cFileName);
+
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        {
+            if(strncmp(find_data.cFileName, ".", 1) != 0 && strncmp(find_data.cFileName, "..", 2) != 0)
+            {
+                find_src_recurse(
+                    r_num_src,
+                    r_src,
+                    max_r_num_src,
+                    &file_path
+                );
+            }
+        }
+        else
+        {
+            ASSERT(*r_num_src < max_r_num_src, "Too many src files.");
+            r_src[*r_num_src] = file_path;
+            (*r_num_src)++;
+        }
+    }
+    while(FindNextFile(hfind, &find_data) != 0);
+    DWORD last_error = GetLastError();
+    ASSERT(last_error == ERROR_NO_MORE_FILES, "FindNextFile error: %i", last_error);
+    FindClose(hfind);
+}
+
+void make_dirs(String256 path)
+{
+    for(u64 i = 0; i < path.len; i++)
+    {
+        if(path.s[i] == '\\')
+        {
+            const char c = path.s[i];
+            path.s[i] = 0;
+            const BOOL create_directory_success = CreateDirectory(path.s, NULL);
+            if(!create_directory_success)
+            {
+                const u32 error = GetLastError();
+                ASSERT(error == ERROR_ALREADY_EXISTS, "'CreateDirectory' failed with error %u", error);
+            }
+            path.s[i] = c;
+        }
+    }
+}
 
 int main()
 {
-    
-    for(int i = 0; i < build[0].num_cc_flags; i++)
+    String256 src_dir = MAKE_STRING256("src");
+
+    u64 num_src = 0;
+    String256* src = (String256*)calloc(1024 * sizeof(String256), 1);
+    find_src_recurse(
+        &num_src,
+        src,
+        1024,
+        &src_dir
+    );
+
+    u64 num_c_files = 0;
+    String256* c_files = (String256*)calloc(1024 * sizeof(String256), 1);
+
+    u64 num_obj_files = 0;
+    String256* obj_files = (String256*)calloc(1024 * sizeof(String256), 1);
+
+    for(u64 i = 0; i < num_src; i++)
     {
-        printf("%s\n", build[0].cc_flags[i]);
+        const String256 src_path = src[i];
+        ASSERT(str_begins_with_cstr(src_path, "src\\"), "Expected 'src\\' in beginning of src file '%s'", src[i].s);
+
+        if(str_ends_with_cstr(src_path, ".c"))
+        {
+            ASSERT(num_c_files <= 1024, "c_files overflow.");
+            c_files[num_c_files] = src_path;
+            num_c_files++;
+        }
     }
+
+
+    for(u64 i_build = 0; i_build < ARRAY_COUNT(build); i_build++)
+    {
+        const struct Build* cur_build = &build[i_build];
+
+        num_obj_files = 0;
+
+        String256 inter_dir = MAKE_STRING256("build\\intermediate_");
+        inter_dir = str_concat_cstr(inter_dir, cur_build->name);
+        inter_dir = str_concat_cstr(inter_dir, "\\");
+        
+        for(u64 i = 0; i < num_c_files; i++)
+        {
+            const String256 c_file = c_files[i];
+
+            String256 obj_path = str_concat_str(inter_dir, c_file);
+            obj_path = str_concat_cstr(str_slice_left(obj_path, str_rfind_char(obj_path, '.')), ".obj");
+
+            ASSERT(num_obj_files < 1024, "obj_files overflow.");
+            obj_files[num_obj_files] = obj_path;
+            num_obj_files++;
+
+            String256 pdb_path = str_concat_str(inter_dir, c_file);
+            pdb_path = str_concat_cstr(str_slice_left(pdb_path, str_rfind_char(pdb_path, '.')), ".pdb");
+
+            make_dirs(obj_path);
+
+            char cmd[4096] = {};
+            char* cmd_cur = cmd;
+            char* cmd_end = cmd + sizeof(cmd) - 1;
+
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->cc_cmd);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            for(u64 i_flag = 0; i_flag < (u64)cur_build->num_cc_flags; i_flag++)
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->cc_flags[i_flag]);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/Fo%s /Fd%s %s",
+                                                 obj_path.s,
+                                                 pdb_path.s,
+                                                 c_file.s);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            // TODO(mfritz): Spawn processes in parallel and join before linking.            
+            printf("%s\n", cmd);
+            run_cmd(cmd);
+        }
+
+        {
+            char cmd[4096] = {};
+            char* cmd_cur = cmd;
+            char* cmd_end = cmd + sizeof(cmd) - 1;
+
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->link_cmd);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            for(u64 i = 0; i < (u64)cur_build->num_link_flags; i++)
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->link_flags[i]);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            for(u64 i = 0; i < (u64)cur_build->num_libs; i++)
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->libs[i]);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/OUT:%s%s.exe ", inter_dir.s, program_name);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            for(u64 i = 0; i < num_obj_files; i++)
+            {
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", obj_files[i].s);
+                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                cmd_cur += num_written;
+            }
+
+            printf("%s\n", cmd);
+            run_cmd(cmd);
+        }
+    }
+
+
+
 }
+
+#endif

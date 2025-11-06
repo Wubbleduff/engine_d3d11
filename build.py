@@ -169,77 +169,84 @@ try:
 except FileNotFoundError:
     pass
 
-# Do build.
-for compiler in build:
+with open("build.bat", "w") as bat_file:
+    # Do build.
+    for compiler in build:
 
-    if filter_compiler and filter_compiler != compiler["name"]:
-        continue
-
-    for config in compiler["configs"]:
-
-        if filter_config and filter_config != config["name"]:
+        if filter_compiler and filter_compiler != compiler["name"]:
             continue
 
-        working_dir = os.path.join(build_dir, f"intermediate_{compiler['name']}_{config['name']}")
-        os.makedirs(working_dir, exist_ok=True)
+        for config in compiler["configs"]:
 
-        # Copy the src directory to the intermediate build directory and gather all ".c"
-        # files under it.
-        src_files = []
-        for root, dirs, files in os.walk(src_dir):
-            for src_file in files:
-                if os.path.splitext(src_file)[1] == ".c":
-                    src_files.append(os.path.join(root, src_file))
+            if filter_config and filter_config != config["name"]:
+                continue
+
+            working_dir = os.path.join(build_dir, f"intermediate_{compiler['name']}_{config['name']}")
+            os.makedirs(working_dir, exist_ok=True)
+
+            # Copy the src directory to the intermediate build directory and gather all ".c"
+            # files under it.
+            src_files = []
+            for root, dirs, files in os.walk(src_dir):
+                for src_file in files:
+                    if os.path.splitext(src_file)[1] == ".c":
+                        src_files.append(os.path.join(root, src_file))
         
-        # Compile all src files.
-        compile_success = True
-        obj_files = []
-        for src_file in src_files:
-            obj_file = f"{os.path.join(working_dir, os.path.splitext(src_file)[0])}.obj"
-            pdb_file = f"{os.path.join(working_dir, os.path.splitext(src_file)[0])}.pdb"
+            # Compile all src files.
+            compile_success = True
+            obj_files = []
+            for src_file in src_files:
+                obj_file = f"{os.path.join(working_dir, os.path.splitext(src_file)[0])}.obj"
+                pdb_file = f"{os.path.join(working_dir, os.path.splitext(src_file)[0])}.pdb"
 
-            os.makedirs(os.path.dirname(obj_file), exist_ok=True)
-            os.makedirs(os.path.dirname(pdb_file), exist_ok=True)
+                os.makedirs(os.path.dirname(obj_file), exist_ok=True)
+                os.makedirs(os.path.dirname(pdb_file), exist_ok=True)
 
-            cmd_list = []
-            cmd_list.append(compiler["cc_cmd"])
-            cmd_list.extend(config["cc_flags"])
-            cmd_list.append(f"/Fo{obj_file}")
-            cmd_list.append(f"/Fd{pdb_file}")
-            cmd_list.append(src_file)
+                cmd_list = []
+                cmd_list.append(compiler["cc_cmd"])
+                cmd_list.extend(config["cc_flags"])
+                cmd_list.append(f"/Fo{obj_file}")
+                cmd_list.append(f"/Fd{pdb_file}")
+                cmd_list.append(src_file)
             
+                cmd_str = " ".join(cmd_list)
+                #print(f"Compiling '{src_file}'...", flush=True)
+                bat_file.write(cmd_str.replace("\\", "\\\\"))
+                bat_file.write("\r\n")
+                print(f"{cmd_str}")
+                proc = subprocess.run(cmd_str, capture_output=True)
+                if proc.returncode != 0:
+                    print(proc.stdout.decode("utf-8"))
+                    print(proc.stderr.decode("utf-8"))
+                    compile_success = False
+                obj_files.append(obj_file)
+        
+            if not compile_success:
+                exit(1)
+        
+            working_program_file = os.path.join(working_dir, f"{program_name}.exe")
+
+            # Link all object files.
+            cmd_list = []
+            cmd_list.append(compiler["link_cmd"])
+            cmd_list.extend(config["link_flags"])
+            cmd_list.extend(libs)
+            cmd_list.append(f"/OUT:{working_program_file}")
+            cmd_list.extend(obj_files)
             cmd_str = " ".join(cmd_list)
-            print(f"Compiling '{src_file}'...", flush=True)
+            # print("Linking...")
+            bat_file.write(cmd_str.replace("\\", "\\\\"))
+            bat_file.write("\r\n")
+            print(f"{cmd_str}")
             proc = subprocess.run(cmd_str, capture_output=True)
             if proc.returncode != 0:
                 print(proc.stdout.decode("utf-8"))
                 print(proc.stderr.decode("utf-8"))
-                compile_success = False
-            obj_files.append(obj_file)
-        
-        if not compile_success:
-            exit(1)
-        
-        working_program_file = os.path.join(working_dir, f"{program_name}.exe")
+                exit(1)
 
-        # Link all object files.
-        cmd_list = []
-        cmd_list.append(compiler["link_cmd"])
-        cmd_list.extend(config["link_flags"])
-        cmd_list.extend(libs)
-        cmd_list.append(f"/OUT:{working_program_file}")
-        cmd_list.extend(obj_files)
-        cmd_str = " ".join(cmd_list)
-        print("Linking...")
-        proc = subprocess.run(cmd_str, capture_output=True)
-        if proc.returncode != 0:
-            print(proc.stdout.decode("utf-8"))
-            print(proc.stderr.decode("utf-8"))
-            exit(1)
-
-        # Copy files for deploy.
-        deploy_dir = os.path.join(build_dir, f"deploy_{compiler['name']}_{config['name']}")
-        os.makedirs(deploy_dir, exist_ok=True)
-        deploy_program_file = os.path.join(deploy_dir, f"{program_name}.exe")
-        shutil.copyfile(working_program_file, deploy_program_file)
-        print(f"{deploy_program_file}")
+            # Copy files for deploy.
+            deploy_dir = os.path.join(build_dir, f"deploy_{compiler['name']}_{config['name']}")
+            os.makedirs(deploy_dir, exist_ok=True)
+            deploy_program_file = os.path.join(deploy_dir, f"{program_name}.exe")
+            shutil.copyfile(working_program_file, deploy_program_file)
+            # print(f"{deploy_program_file}")
