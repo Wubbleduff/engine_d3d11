@@ -30,7 +30,7 @@ struct Build
 #define COMMON_COMPILE_FLAGS "/c", "/W4", "/WX", "/EHsc", "/std:c17", "/GS-", "/Gs9999999", "/nologo", "/Isrc", "/I../common"
 #define DEBUG_COMPILE_FLAGS "/Od", "/Zi", "/DDEBUG"
 #define RELEASE_COMPILE_FLAGS "/O2"
-#define COMMON_LINKER_FLAGS "/NODEFAULTLIB", "/STACK:0x100000,0x100000", "/SUBSYSTEM:WINDOWS", "/MACHINE:X64"
+#define COMMON_LINKER_FLAGS "/NODEFAULTLIB", "/STACK:0x100000,0x100000", "/SUBSYSTEM:WINDOWS", "/MACHINE:X64", "/nologo"
 #define LIBS "kernel32.lib", "user32.lib", "gdi32.lib", "d3d11.lib", "dxgi.lib", "dxguid.lib"
 
 #define ARRAY_INIT(TYPE, NAME, ...) .num_##NAME = (sizeof( (TYPE[]) { __VA_ARGS__ } ) / sizeof(TYPE)), .NAME = { __VA_ARGS__ }
@@ -160,8 +160,6 @@ typedef int8_t s8;
 typedef int16_t s16;
 typedef int32_t s32;
 typedef int64_t s64;
-
-#ifdef _MSC_VER
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -349,24 +347,26 @@ void make_dirs(String256 path)
     }
 }
 
+#define MAX_SRC 1024
+
 int main()
 {
     String256 src_dir = MAKE_STRING256("src");
 
     u64 num_src = 0;
-    String256* src = (String256*)calloc(1024 * sizeof(String256), 1);
+    String256* src = (String256*)calloc(MAX_SRC * sizeof(String256), 1);
     find_src_recurse(
         &num_src,
         src,
-        1024,
+        MAX_SRC,
         &src_dir
     );
 
     u64 num_c_files = 0;
-    String256* c_files = (String256*)calloc(1024 * sizeof(String256), 1);
+    String256* c_files = (String256*)calloc(MAX_SRC * sizeof(String256), 1);
 
     u64 num_obj_files = 0;
-    String256* obj_files = (String256*)calloc(1024 * sizeof(String256), 1);
+    String256* obj_files = (String256*)calloc(MAX_SRC * sizeof(String256), 1);
 
     for(u64 i = 0; i < num_src; i++)
     {
@@ -375,12 +375,13 @@ int main()
 
         if(str_ends_with_cstr(src_path, ".c"))
         {
-            ASSERT(num_c_files <= 1024, "c_files overflow.");
+            ASSERT(num_c_files <= MAX_SRC, "c_files overflow.");
             c_files[num_c_files] = src_path;
             num_c_files++;
         }
     }
 
+    u32 compile_error = 0;
 
     for(u64 i_build = 0; i_build < ARRAY_COUNT(build); i_build++)
     {
@@ -391,6 +392,12 @@ int main()
         String256 inter_dir = MAKE_STRING256("build\\intermediate_");
         inter_dir = str_concat_cstr(inter_dir, cur_build->name);
         inter_dir = str_concat_cstr(inter_dir, "\\");
+
+        u64 num_compiles = 0;
+        HANDLE compile_procs[MAX_SRC];
+        HANDLE compile_threads[MAX_SRC];
+        HANDLE compile_stdouts_read[MAX_SRC];
+        HANDLE compile_stdouts_write[MAX_SRC];
         
         for(u64 i = 0; i < num_c_files; i++)
         {
@@ -399,7 +406,7 @@ int main()
             String256 obj_path = str_concat_str(inter_dir, c_file);
             obj_path = str_concat_cstr(str_slice_left(obj_path, str_rfind_char(obj_path, '.')), ".obj");
 
-            ASSERT(num_obj_files < 1024, "obj_files overflow.");
+            ASSERT(num_obj_files < MAX_SRC, "obj_files overflow.");
             obj_files[num_obj_files] = obj_path;
             num_obj_files++;
 
@@ -434,9 +441,92 @@ int main()
                 cmd_cur += num_written;
             }
 
-            // TODO(mfritz): Spawn processes in parallel and join before linking.            
-            printf("%s\n", cmd);
-            run_cmd(cmd);
+            printf("Compiling '%s'\n", c_file.s);
+
+            // Create compiler process.
+            {
+                // Create stdout pipe for child.
+                SECURITY_ATTRIBUTES sa =
+                {
+                    .nLength = sizeof(SECURITY_ATTRIBUTES),
+                    .bInheritHandle = TRUE,
+                };
+
+                BOOL success = CreatePipe(
+                    &compile_stdouts_read[num_compiles],
+                    &compile_stdouts_write[num_compiles],
+                    &sa,
+                    0);
+                ASSERT(success, "'CreatePipe' failed.");
+                success = SetHandleInformation(
+                    compile_stdouts_read[num_compiles],
+                    HANDLE_FLAG_INHERIT,
+                    0);
+                ASSERT(success, "'SetHandleInformation' failed.");
+
+                STARTUPINFOA startup_info = {
+                    .cb = sizeof(STARTUPINFOA),
+                    .hStdError = compile_stdouts_write[num_compiles],
+                    .hStdOutput = compile_stdouts_write[num_compiles],
+                    .dwFlags = STARTF_USESTDHANDLES,
+                };
+                PROCESS_INFORMATION proc_info = {};
+                const BOOL ret = CreateProcessA(NULL, (char*)cmd, NULL, NULL, TRUE, 0, NULL, NULL, &startup_info, &proc_info);
+                ASSERT(ret, "run_cmd proc failure");
+
+                // This process must close the stdout write handle (we don't need it).
+                // Otherwise, we cannot wait for the child to end.
+                CloseHandle(compile_stdouts_write[num_compiles]);
+
+                compile_procs[num_compiles] = proc_info.hProcess;
+                compile_threads[num_compiles] = proc_info.hThread;
+                num_compiles++;
+            }
+        }
+
+        WaitForMultipleObjects(num_compiles, compile_procs, TRUE, INFINITE);
+
+        const HANDLE hstdout = GetStdHandle(STD_OUTPUT_HANDLE);
+        for(u64 i = 0; i < num_compiles; i++)
+        {
+            {
+                u32 exit_code;
+                u32 success = GetExitCodeProcess(compile_procs[i], &exit_code);
+                ASSERT(success, "'GetExitCodeProcess' failed with error %u.", GetLastError());
+
+                compile_error = compile_error || (exit_code != 0);
+            }
+
+            u8 buf[4096];
+            while(1)
+            {
+                u32 num_read;
+                u32 success = ReadFile(
+                    compile_stdouts_read[i],
+                    buf,
+                    sizeof(buf) - 1,
+                    &num_read,
+                    NULL);
+                u32 err = GetLastError();
+                ASSERT(success || err == ERROR_BROKEN_PIPE, "'ReadFile' failed with error %u.", err);
+                if(num_read == 0)
+                {
+                    break;
+                }
+
+                buf[num_read] = 0;
+
+                printf("%s", buf);
+            }
+
+            CloseHandle(compile_procs[i]);
+            CloseHandle(compile_threads[i]);
+            CloseHandle(compile_stdouts_read[i]);
+        }
+
+        if(compile_error)
+        {
+            break;
         }
 
         {
@@ -477,13 +567,8 @@ int main()
                 cmd_cur += num_written;
             }
 
-            printf("%s\n", cmd);
+            printf("Linking...");
             run_cmd(cmd);
         }
     }
-
-
-
 }
-
-#endif
