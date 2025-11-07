@@ -393,6 +393,10 @@ int main()
         inter_dir = str_concat_cstr(inter_dir, cur_build->name);
         inter_dir = str_concat_cstr(inter_dir, "\\");
 
+        String256 deploy_dir = MAKE_STRING256("build\\deploy_");
+        deploy_dir = str_concat_cstr(deploy_dir, cur_build->name);
+        deploy_dir = str_concat_cstr(deploy_dir, "\\");
+
         u64 num_compiles = 0;
         HANDLE compile_procs[MAX_SRC];
         HANDLE compile_threads[MAX_SRC];
@@ -486,6 +490,8 @@ int main()
 
         WaitForMultipleObjects(num_compiles, compile_procs, TRUE, INFINITE);
 
+        String256 program_name_exe = str_concat_cstr(make_str(program_name), ".exe");
+
         const HANDLE hstdout = GetStdHandle(STD_OUTPUT_HANDLE);
         for(u64 i = 0; i < num_compiles; i++)
         {
@@ -555,7 +561,7 @@ int main()
             }
 
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/OUT:%s%s.exe ", inter_dir.s, program_name);
+                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/OUT:%s%s ", inter_dir.s, program_name_exe.s);
                 ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
@@ -567,8 +573,22 @@ int main()
                 cmd_cur += num_written;
             }
 
-            printf("Linking...");
+            printf("Linking...\n");
             run_cmd(cmd);
+        }
+
+
+        {
+            String256 src = str_concat_str(inter_dir, program_name_exe);
+            String256 dst = str_concat_str(deploy_dir, program_name_exe);
+
+            make_dirs(deploy_dir);
+
+            const BOOL success = CopyFile(
+                src.s,
+                dst.s,
+                FALSE);
+            ASSERT(success, "'CopyFile' failed with error %u.", GetLastError());
         }
     }
 }
