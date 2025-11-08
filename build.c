@@ -27,7 +27,7 @@ struct Build
 };
 
 
-#define COMMON_COMPILE_FLAGS "/c", "/W4", "/WX", "/EHsc", "/std:c17", "/GS-", "/Gs9999999", "/nologo", "/Isrc", "/I../common"
+#define COMMON_COMPILE_FLAGS "/c", "/W4", "/WX", "/EHsc", "/std:c17", "/GS-", "/Gs9999999", "/nologo", "/Isrc", "/I..\\common"
 #define DEBUG_COMPILE_FLAGS "/Od", "/Zi", "/DDEBUG"
 #define RELEASE_COMPILE_FLAGS "/O2"
 #define COMMON_LINKER_FLAGS "/NODEFAULTLIB", "/STACK:0x100000,0x100000", "/SUBSYSTEM:WINDOWS", "/MACHINE:X64", "/nologo"
@@ -365,9 +365,13 @@ int main()
     u64 num_c_files = 0;
     String256* c_files = (String256*)calloc(MAX_SRC * sizeof(String256), 1);
 
+    u64 num_hlsl_files = 0;
+    String256* hlsl_files = (String256*)calloc(MAX_SRC * sizeof(String256), 1);
+
     u64 num_obj_files = 0;
     String256* obj_files = (String256*)calloc(MAX_SRC * sizeof(String256), 1);
 
+    // Get files of each type.
     for(u64 i = 0; i < num_src; i++)
     {
         const String256 src_path = src[i];
@@ -379,10 +383,47 @@ int main()
             c_files[num_c_files] = src_path;
             num_c_files++;
         }
+
+        if(str_ends_with_cstr(src_path, ".hlsl"))
+        {
+            ASSERT(num_hlsl_files <= MAX_SRC, "hlsl_files overflow.");
+            hlsl_files[num_hlsl_files] = src_path;
+            num_hlsl_files++;
+        }
+    }
+    
+    // Compile shaders.
+    for(u64 i = 0; i < num_hlsl_files; i++)
+    {
+        const String256 hlsl_file = hlsl_files[i];
+        String256 name = str_slice_left(hlsl_file, str_rfind_char(hlsl_file, '.'));
+        name = str_slice_right(name, str_rfind_char(name, '\\') + 1);
+
+        char cmd[4096] = {};
+        s32 num_written = snprintf(
+            cmd,
+            sizeof(cmd),
+            "fxc.exe /nologo /T vs_5_0 /E vs /O3 /WX /Zpc /Ges /Fh src\\platform_win32\\shaders\\generated\\d3d11_vshader_%s.h /Vn d3d11_vshader_%s /Qstrip_reflect /Qstrip_debug /Qstrip_priv %s",
+            name.s,
+            name.s,
+            hlsl_file.s);
+        ASSERT(num_written >= 0 && num_written >= 0 && num_written < sizeof(cmd), "cmd overflow.");
+        run_cmd(cmd);
+
+        num_written = snprintf(
+            cmd,
+            sizeof(cmd),
+            "fxc.exe /nologo /T ps_5_0 /E ps /O3 /WX /Zpc /Ges /Fh src\\platform_win32\\shaders\\generated\\d3d11_pshader_%s.h /Vn d3d11_pshader_%s /Qstrip_reflect /Qstrip_debug /Qstrip_priv %s",
+            name.s,
+            name.s,
+            hlsl_file.s);
+        ASSERT(num_written >= 0 && num_written >= 0 && num_written < sizeof(cmd), "cmd overflow.");
+        run_cmd(cmd);
     }
 
     u32 compile_error = 0;
 
+    // Build C files for each build config.
     for(u64 i_build = 0; i_build < ARRAY_COUNT(build); i_build++)
     {
         const struct Build* cur_build = &build[i_build];
@@ -424,28 +465,29 @@ int main()
             char* cmd_end = cmd + sizeof(cmd) - 1;
 
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->cc_cmd);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->cc_cmd);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             for(u64 i_flag = 0; i_flag < (u64)cur_build->num_cc_flags; i_flag++)
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->cc_flags[i_flag]);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->cc_flags[i_flag]);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/Fo%s /Fd%s %s",
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/Fo%s /Fd%s %s",
                                                  obj_path.s,
                                                  pdb_path.s,
                                                  c_file.s);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             printf("Compiling '%s'\n", c_file.s);
+            fflush(stdout);
 
             // Create compiler process.
             {
@@ -541,42 +583,41 @@ int main()
             char* cmd_end = cmd + sizeof(cmd) - 1;
 
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->link_cmd);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->link_cmd);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             for(u64 i = 0; i < (u64)cur_build->num_link_flags; i++)
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->link_flags[i]);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->link_flags[i]);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             for(u64 i = 0; i < (u64)cur_build->num_libs; i++)
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->libs[i]);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", cur_build->libs[i]);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/OUT:%s%s ", inter_dir.s, program_name_exe.s);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "/OUT:%s%s ", inter_dir.s, program_name_exe.s);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             for(u64 i = 0; i < num_obj_files; i++)
             {
-                const int num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", obj_files[i].s);
-                ASSERT(num_written < cmd_end - cmd_cur, "cmd overflow.");
+                const s32 num_written = snprintf(cmd_cur, cmd_end - cmd_cur, "%s ", obj_files[i].s);
+                ASSERT(num_written >= 0 && num_written < cmd_end - cmd_cur, "cmd overflow.");
                 cmd_cur += num_written;
             }
 
             printf("Linking...\n");
             run_cmd(cmd);
         }
-
 
         {
             String256 src = str_concat_str(inter_dir, program_name_exe);
